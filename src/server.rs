@@ -1,3 +1,4 @@
+use std::io::Read;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -7,6 +8,11 @@ use serde_json::Value;
 use tiny_http::{Header, Method, Response, Server, StatusCode};
 
 use crate::db;
+
+/// Hard cap on a request body. Events are small JSON; anything bigger is a
+/// mistake or a memory-exhaustion attempt (the body is buffered in full, and
+/// the server is single-threaded so one huge body would also stall ingest).
+const MAX_BODY_BYTES: u64 = 1024 * 1024;
 
 /// Minimal ingest API so other devices can push events, e.g. an iOS Shortcuts
 /// automation ("When Instagram is opened") doing a POST:
@@ -63,8 +69,17 @@ fn handle(
     }
 
     let mut body = String::new();
-    if request.as_reader().read_to_string(&mut body).is_err() {
+    // take() rather than trusting Content-Length: chunked bodies have none.
+    if request
+        .as_reader()
+        .take(MAX_BODY_BYTES + 1)
+        .read_to_string(&mut body)
+        .is_err()
+    {
         return reply(400, r#"{"error":"unreadable body"}"#);
+    }
+    if body.len() as u64 > MAX_BODY_BYTES {
+        return reply(413, r#"{"error":"body too large"}"#);
     }
     let parsed: Value = match serde_json::from_str(&body) {
         Ok(v) => v,
@@ -79,6 +94,13 @@ fn handle(
         .duration_since(UNIX_EPOCH)
         .expect("clock after epoch")
         .as_millis() as i64;
+    // One transaction for the whole batch: an error response must mean nothing
+    // was stored, or a client retrying the batch would duplicate the events
+    // that succeeded the first time (phone_events has no dedup key).
+    let tx = match conn.unchecked_transaction() {
+        Ok(tx) => tx,
+        Err(e) => return reply(500, &format!(r#"{{"error":"{e}"}}"#)),
+    };
     let mut inserted = 0;
     for event in &events {
         let Some(kind) = event.get("kind").and_then(Value::as_str) else {
@@ -87,7 +109,7 @@ fn handle(
         let ts_ms = event.get("ts_ms").and_then(Value::as_i64).unwrap_or(now_ms);
         let device = event.get("device").and_then(Value::as_str);
         let payload = event.get("payload").map(Value::to_string);
-        let ok = conn.execute(
+        let ok = tx.execute(
             "INSERT INTO phone_events (ts_ms, device, kind, payload) VALUES (?1, ?2, ?3, ?4)",
             params![ts_ms, device, kind, payload],
         );
@@ -95,6 +117,9 @@ fn handle(
             Ok(n) => inserted += n,
             Err(e) => return reply(500, &format!(r#"{{"error":"{e}"}}"#)),
         }
+    }
+    if let Err(e) = tx.commit() {
+        return reply(500, &format!(r#"{{"error":"{e}"}}"#));
     }
     reply(200, &format!(r#"{{"ok":true,"inserted":{inserted}}}"#))
 }

@@ -73,7 +73,7 @@ pub fn run(conn: &Connection, config: &Config) -> Result<()> {
             window_title: (state == "active").then(|| window_title.clone()).flatten(),
         };
 
-        open = Some(advance_span(&conn, open, key, ts, max_gap_ms)?);
+        open = Some(advance_span(conn, open, key, ts, max_gap_ms)?);
         std::thread::sleep(config.interval);
     }
 }
