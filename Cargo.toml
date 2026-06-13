@@ -1,0 +1,23 @@
+[package]
+name = "lifelog"
+version = "0.1.0"
+edition = "2021"
+description = "Continuous local activity log for macOS: frontmost-app sampler, Screen Time ingest, phone event API, all into one queryable SQLite db"
+license = "MIT"
+repository = "https://github.com/andrewgazelka/lifelog"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+core-foundation = "0.10"
+dirs = "5"
+libc = "0.2"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSWorkspace", "NSRunningApplication"] }
+objc2-foundation = { version = "0.3", features = ["NSString"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde_json = "1"
+tiny_http = "0.12"
+
+[profile.release]
+lto = true
